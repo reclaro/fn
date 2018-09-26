@@ -52,7 +52,6 @@ type driverAuthConfig struct {
 func (r *runResult) Error() error   { return r.err }
 func (r *runResult) Status() string { return r.status }
 
-
 type DockerDriver struct {
 	conf       drivers.Config
 	docker     dockerClient // retries on *docker.Client, restricts ad hoc *docker.Client usage / retries
@@ -65,13 +64,12 @@ type DockerDriver struct {
 	networks     map[string]uint64
 }
 
-
 // NewImageCleaner builds an evicter that loops every ImageCacheCleanInterval, checkes to see
 // if there is more space consumed then the maxSize allowed by configuration. If there is
 // NewImageCleaner checks the image cache for the list of evicitable images and then tries
 // in order of most evicitable to remove the image. If the disk consumption constraint is
 // satisfied the for loop breaks.
-func NewImageCleaner(context context.Context, dockerDriver *DockerDriver,  maxSize int64) error {
+func NewImageCleaner(context context.Context, dockerDriver *DockerDriver, maxSize int64) error {
 	opts := docker.RemoveImageOptions{}
 	duopts := docker.DiskUsageOptions{}
 	opts.Force = true
@@ -99,7 +97,7 @@ func NewImageCleaner(context context.Context, dockerDriver *DockerDriver,  maxSi
 
 					du, err := dockerDriver.docker.DiskUsage(duopts)
 					if du.LayersSize < maxSize {
-						break;
+						break
 					}
 
 				}
@@ -109,7 +107,6 @@ func NewImageCleaner(context context.Context, dockerDriver *DockerDriver,  maxSi
 	}
 }
 
-
 func Contains(coll []docker.APIImages, item docker.APIImages) bool {
 	for _, image := range coll {
 		if image.ID == item.ID {
@@ -118,7 +115,6 @@ func Contains(coll []docker.APIImages, item docker.APIImages) bool {
 	}
 	return false
 }
-
 
 // implements drivers.Driver
 func NewDocker(conf drivers.Config) *DockerDriver {
