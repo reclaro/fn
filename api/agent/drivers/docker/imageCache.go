@@ -87,7 +87,7 @@ func (c *Cache) contains(value d.APIImages) bool {
 
 }
 
-// Marks a image by ID as having been used.
+// Mark marks an image by ID as having been used.
 func (c *Cache) Mark(ID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -184,7 +184,6 @@ func (c *Cache) Add(value d.APIImages) {
 	}
 	c.cache = append(c.cache, NewEntry(value))
 }
-
 
 // Evictable returns all evictable images ordered by score (which is why it's wrapped in EntryByAge)
 func (c *Cache) Evictable() EntryByAge {
