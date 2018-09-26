@@ -52,6 +52,7 @@ type driverAuthConfig struct {
 func (r *runResult) Error() error   { return r.err }
 func (r *runResult) Status() string { return r.status }
 
+
 type DockerDriver struct {
 	conf       drivers.Config
 	docker     dockerClient // retries on *docker.Client, restricts ad hoc *docker.Client usage / retries
@@ -64,7 +65,13 @@ type DockerDriver struct {
 	networks     map[string]uint64
 }
 
-func NewImageCleaner(dockerDriver *DockerDriver, context context.Context, maxSize int64) error {
+
+// NewImageCleaner builds an evicter that loops every ImageCacheCleanInterval, checkes to see
+// if there is more space consumed then the maxSize allowed by configuration. If there is
+// NewImageCleaner checks the image cache for the list of evicitable images and then tries
+// in order of most evicitable to remove the image. If the disk consumption constraint is
+// satisfied the for loop breaks.
+func NewImageCleaner(context context.Context, dockerDriver *DockerDriver,  maxSize int64) error {
 	opts := docker.RemoveImageOptions{}
 	duopts := docker.DiskUsageOptions{}
 	opts.Force = true
@@ -74,32 +81,34 @@ func NewImageCleaner(dockerDriver *DockerDriver, context context.Context, maxSiz
 	for {
 		select {
 		case <-context.Done():
-			{
-				return nil
-			}
+			return nil
 		case <-ticker.C:
-			{
-				du, err := dockerDriver.docker.DiskUsage(duopts)
-				if err != nil {
-					logrus.WithError(err).Error("attempting to check disk usage")
-				}
-				if du.LayersSize > maxSize {
-					toEvict := dockerDriver.imageCache.Evictable()
-					for _, i := range toEvict {
-						err := dockerDriver.docker.RemoveImage(i.image.ID, opts)
-						if err != nil {
-							logrus.WithError(err).Errorf("Could not remove image: %v because: %v", i, err)
-						} else {
-							dockerDriver.imageCache.Remove(i.image)
-						}
+			du, err := dockerDriver.docker.DiskUsage(duopts)
+			if err != nil {
+				logrus.WithError(err).Error("attempting to check disk usage")
+			}
+			if du.LayersSize > maxSize {
+				toEvict := dockerDriver.imageCache.Evictable()
+				for _, i := range toEvict {
+					err := dockerDriver.docker.RemoveImage(i.image.ID, opts)
+					if err != nil {
+						logrus.WithError(err).Errorf("Could not remove image: %v because: %v", i, err)
+					} else {
+						dockerDriver.imageCache.Remove(i.image)
 					}
+
+					du, err := dockerDriver.docker.DiskUsage(duopts)
+					if du.LayersSize < maxSize {
+						break;
+					}
+
 				}
 			}
-
 		}
 
 	}
 }
+
 
 func Contains(coll []docker.APIImages, item docker.APIImages) bool {
 	for _, image := range coll {
@@ -109,6 +118,7 @@ func Contains(coll []docker.APIImages, item docker.APIImages) bool {
 	}
 	return false
 }
+
 
 // implements drivers.Driver
 func NewDocker(conf drivers.Config) *DockerDriver {
@@ -175,7 +185,7 @@ func NewDocker(conf drivers.Config) *DockerDriver {
 			}
 		}(context.Background())
 
-		go NewImageCleaner(driver, context.Background(), int64(conf.MaxImageCacheSize))
+		go NewImageCleaner(context.Background(), driver, int64(conf.MaxImageCacheSize))
 	}
 
 	return driver
