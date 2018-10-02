@@ -265,6 +265,53 @@ func (ch *callHandle) enqueueCallResponse(err error) {
 	}
 }
 
+// enqueueAckSyncResponse enqueues a Submit() response to the LB for
+// an AckSync call. We just need to signal back that the call has been
+// placed on a runner, if there is any error, we send it back to the LB
+func (ch *callHandle) enqueueAckSyncResponse(err error) {
+
+	var createdAt string
+	var startedAt string
+	var details string
+	var errCode int
+	var errStr string
+	log := common.Logger(ch.ctx)
+
+	if err != nil {
+		errCode = models.GetAPIErrorCode(err)
+		errStr = err.Error()
+	}
+
+	if ch.c != nil {
+		mcall := ch.c.Model()
+		if !time.Time(mcall.CreatedAt).IsZero() {
+			createdAt = mcall.CreatedAt.String()
+
+			if !time.Time(mcall.StartedAt).IsZero() {
+				startedAt = mcall.StartedAt.String()
+
+			}
+		}
+		details = mcall.ID
+
+	}
+
+	log.Debugf("Sending Ack for the sync call, details=%v", details)
+	errTmp := ch.enqueueMsgStrict(&runner.RunnerMsg{
+		Body: &runner.RunnerMsg_AckSync{AckSync: &runner.AckSyncCall{
+			Success:   err == nil,
+			ErrorCode: int32(errCode),
+			ErrorStr:  errStr,
+			CreatedAt: createdAt,
+			StartedAt: startedAt,
+		}}})
+	if errTmp != nil {
+		log.WithError(errTmp).Infof("enqueueAckSyncResponse Send Error details=%v err=%v:%v", details, errCode, errStr)
+		return
+	}
+	//TODO do we need to call the ch.finalize here? I think we need as it is the way we send the EOF, right?
+}
+
 // spawnPipeToFn pumps data to Function via callHandle io.PipeWriter (pipeToFnW)
 // which is fed using input channel.
 func (ch *callHandle) spawnPipeToFn() chan *runner.DataFrame {
@@ -561,8 +608,14 @@ func (pr *pureRunner) AddCallListener(cl fnext.CallListener) {
 
 func (pr *pureRunner) spawnSubmit(state *callHandle) {
 	go func() {
+		isSync := state.c.Type == models.TypeSync
 		err := pr.a.Submit(state.c)
-		state.enqueueCallResponse(err)
+		if isSync {
+			state.enqueueCallResponse(err)
+		} else {
+			state.enqueueAckSyncResponse(err)
+		}
+
 	}()
 }
 
