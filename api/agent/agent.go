@@ -14,6 +14,8 @@ import (
 
 	"path/filepath"
 
+	"os"
+
 	"github.com/fnproject/fn/api/agent/drivers"
 	"github.com/fnproject/fn/api/agent/protocol"
 	"github.com/fnproject/fn/api/common"
@@ -25,7 +27,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/trace"
-	"os"
 )
 
 // TODO we should prob store async calls in db immediately since we're returning id (will 404 until post-execution)
@@ -293,12 +294,12 @@ func (a *agent) submit(ctx context.Context, call *call) error {
 
 	slot, err := a.getSlot(ctx, call)
 	if err != nil {
-		return a.handleCallEnd(ctx, call, slot, err, false)
+		return a.handleCallEnd(ctx, call, err, false)
 	}
 
 	err = call.Start(ctx)
 	if err != nil {
-		return a.handleCallEnd(ctx, call, slot, err, false)
+		return a.handleCallEnd(ctx, call, err, false)
 	}
 
 	statsDequeue(ctx)
@@ -308,16 +309,55 @@ func (a *agent) submit(ctx context.Context, call *call) error {
 	slotCtx, cancel := context.WithTimeout(ctx, time.Duration(call.Timeout)*time.Second)
 	defer cancel()
 
-	// Pass this error (nil or otherwise) to end directly, to store status, etc.
-	err = slot.exec(slotCtx, call)
-	return a.handleCallEnd(ctx, call, slot, err, true)
+	isSync := call.Model().Type == models.TypeSync
+	// in the async we wait for the notification from the runner once it placed the fn on a container and
+	// we return the response back, we still need to keep the container running till the end to complete
+	// the execution of the function
+	errExec := make(chan error, 1)
+	go a.slotExec(slotCtx, slot, call, errExec)
+
+	for {
+		select {
+		//TODO add ctx.Done? i think this case is managed by the slotExec already
+		//TODO for the async case we need to check for the deadline of the async requests which
+		//is set to a fix value, like 30s
+		case err := <-errExec:
+			return err
+		case err := <-call.Model().AsyncAck:
+			// for sync calls we ignore this ack
+			if isSync {
+				continue
+			}
+			if err != nil {
+				//call here handleCallEnd should be ok? with isStarted = false correct?
+				// in case of error do we need to close the slot?
+				return a.handleCallEnd(ctx, call, err, false)
+			}
+			return a.handleCallPlaced(ctx, call)
+		}
+	}
 }
 
-func (a *agent) handleCallEnd(ctx context.Context, call *call, slot Slot, err error, isStarted bool) error {
-
+func (a *agent) slotExec(ctx context.Context, slot Slot, call *call, errChan chan error) {
+	// Pass this error (nil or otherwise) to end directly, to store status, etc.
+	err := slot.exec(ctx, call)
 	if slot != nil {
 		slot.Close()
 	}
+	errChan <- a.handleCallEnd(ctx, call, err, true)
+}
+
+func (a *agent) handleCallPlaced(ctx context.Context, call *call) error {
+	//TODO write the 202 answer as the call has been placed on a container
+
+	return nil
+}
+
+func (a *agent) handleCallEnd(ctx context.Context, call *call, err error, isStarted bool) error {
+
+	// if slot != nil {
+	// 	slot.Close()
+	// }
 
 	// This means call was routed (executed)
 	if isStarted {
