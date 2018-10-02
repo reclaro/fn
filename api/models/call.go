@@ -14,6 +14,8 @@ const (
 	TypeSync = "sync"
 	// TypeAsync ...
 	TypeAsync = "async"
+	// TypeAcksync ...
+	TypeAcksync = "acksync"
 )
 
 const (
@@ -157,6 +159,9 @@ type Call struct {
 
 	// Fn this call belongs to.
 	FnID string `json:"fn_id" db:"fn_id"`
+
+	// Channel for async notification, used to ack once a fn has been placed on a container
+	AsyncAck chan error
 }
 
 type CallFilter struct {
