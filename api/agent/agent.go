@@ -319,24 +319,18 @@ func (a *agent) submit(ctx context.Context, call *call) error {
 	go a.slotExec(slotCtx, slot, call, errExec)
 
 	for {
-		fmt.Println("Inside for")
 		select {
 		//TODO add ctx.Done? i think this case is managed by the slotExec already
 		//TODO for the async case we need to check for the deadline of the async requests which
 		//is set to a fix value, like 30s
 		case err := <-errExec:
-			fmt.Println("Normal error: ", err)
 			return err
 		case err := <-call.Model().AsyncAck:
-
-			fmt.Println("Async error ", err)
 			// for sync calls we ignore this ack
 			if isSync {
-				fmt.Println("Inside sync call")
 				continue
 			}
 			if err != nil {
-				fmt.Println("IS error nil: ", err)
 				//call here handleCallEnd should be ok? with isStarted = false correct?
 				// in case of error do we need to close the slot?
 				return a.handleCallEnd(ctx, call, err, false)
@@ -349,7 +343,6 @@ func (a *agent) submit(ctx context.Context, call *call) error {
 func (a *agent) slotExec(ctx context.Context, slot Slot, call *call, errChan chan<- error) {
 	// Pass this error (nil or otherwise) to end directly, to store status, etc.
 	err := slot.exec(ctx, call)
-	fmt.Println("Handling call end: ", err)
 	if slot != nil {
 		slot.Close()
 	}
@@ -366,8 +359,6 @@ func (a *agent) handleCallPlaced(ctx context.Context, call *call) error {
 }
 
 func (a *agent) handleCallEnd(ctx context.Context, call *call, err error, isStarted bool) error {
-
-	fmt.Println("Inside handle call end")
 	// if slot != nil {
 	// 	slot.Close()
 	// }
@@ -753,6 +744,9 @@ func (s *hotSlot) exec(ctx context.Context, call *call) error {
 	if errApp != nil {
 		err := <-errApp
 		call.Model().AsyncAck <- err
+
+		// TODO: Not nice, will change this
+		errApp <- err
 	} else {
 		call.Model().AsyncAck <- nil
 	}
@@ -760,6 +754,7 @@ func (s *hotSlot) exec(ctx context.Context, call *call) error {
 	select {
 	case err := <-s.errC: // error from container
 		s.trySetError(err)
+
 		return err
 	case err := <-errApp: // from dispatch
 		if err != nil {
