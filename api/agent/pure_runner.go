@@ -270,46 +270,39 @@ func (ch *callHandle) enqueueCallResponse(err error) {
 // placed on a runner, if there is any error, we send it back to the LB
 func (ch *callHandle) enqueueAckSyncResponse(err error) {
 
-	var createdAt string
-	var startedAt string
 	var details string
 	var errCode int
-	var errStr string
+
 	log := common.Logger(ch.ctx)
 
+	//TODO this needs to be set correctly I don't like to hardcode it here
+	errCode = 202
 	if err != nil {
 		errCode = models.GetAPIErrorCode(err)
-		errStr = err.Error()
 	}
 
 	if ch.c != nil {
 		mcall := ch.c.Model()
-		if !time.Time(mcall.CreatedAt).IsZero() {
-			createdAt = mcall.CreatedAt.String()
 
-			if !time.Time(mcall.StartedAt).IsZero() {
-				startedAt = mcall.StartedAt.String()
-
-			}
-		}
 		details = mcall.ID
 
 	}
 
 	log.Debugf("Sending Ack for the sync call, details=%v", details)
 	errTmp := ch.enqueueMsgStrict(&runner.RunnerMsg{
-		Body: &runner.RunnerMsg_AckSync{AckSync: &runner.AckSyncCall{
-			Success:   err == nil,
-			ErrorCode: int32(errCode),
-			ErrorStr:  errStr,
-			CreatedAt: createdAt,
-			StartedAt: startedAt,
-		}}})
+		Body: &runner.RunnerMsg_ResultStart{
+			ResultStart: &runner.CallResultStart{
+				Meta: &runner.CallResultStart_Http{
+					Http: &runner.HttpRespMeta{
+						Headers:    ch.prepHeaders(),
+						StatusCode: int32(errCode)}}}}})
+
 	if errTmp != nil {
-		log.WithError(errTmp).Infof("enqueueAckSyncResponse Send Error details=%v err=%v:%v", details, errCode, errStr)
+		log.WithError(errTmp).Infof("enqueueAckSyncResponse Send Error details=%v err=%v:%v", details, errCode, err.Error())
 		return
 	}
-	//TODO do we need to call the ch.finalize here? I think we need as it is the way we send the EOF, right?
+	// we are not going to send anything back to the LB, we have done here so we can close the outQuue
+	close(ch.outQueue)
 }
 
 // spawnPipeToFn pumps data to Function via callHandle io.PipeWriter (pipeToFnW)
@@ -381,14 +374,19 @@ func (ch *callHandle) spawnSender() {
 	go func() {
 		for {
 			select {
-			case msg := <-ch.outQueue:
-				if msg == nil {
+			case msg, chopen := <-ch.outQueue:
+				if msg == nil && chopen {
 					ch.shutdown(nil)
 					return
 				}
 				err := ch.engagement.Send(msg)
 				if err != nil {
 					ch.shutdown(err)
+					return
+				}
+				// The channel is closed we don't need the spawnSender anymore
+				// For example when we sent an ack for the syncAck we then close the channel
+				if !chopen {
 					return
 				}
 			case <-ch.doneQueue:

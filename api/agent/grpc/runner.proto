@@ -47,15 +47,6 @@ message CallFinished {
     string completedAt = 7;
 }
 
-// Ack signaling that the fn has been placed on a runner and it is running
-message AckSyncCall {
-    bool success = 1;
-    int32 errorCode = 2;
-    string errorStr = 3;
-    string createdAt = 4;
-    string startedAt = 5;
-}
-
 message ClientMsg {
     oneof body {
         TryCall try = 1;
@@ -68,7 +59,6 @@ message RunnerMsg {
         CallResultStart result_start = 1;
         DataFrame data = 2;
         CallFinished finished = 3;
-        AckSyncCall ack_sync = 4;
     }
 }
 
