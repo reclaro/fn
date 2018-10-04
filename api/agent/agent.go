@@ -309,51 +309,16 @@ func (a *agent) submit(ctx context.Context, call *call) error {
 	slotCtx, cancel := context.WithTimeout(ctx, time.Duration(call.Timeout)*time.Second)
 	defer cancel()
 
-	isSync := call.Model().Type == models.TypeSync
-	// in the async we wait for the notification from the runner once it placed the fn on a container and
-	// we return the response back, we still need to keep the container running till the end to complete
-	// the execution of the function
-	errExec := make(chan error, 1)
-	call.Model().AsyncAck = make(chan error, 1)
-
-	go a.slotExec(slotCtx, slot, call, errExec)
-
-	for {
-		select {
-		//TODO add ctx.Done? i think this case is managed by the slotExec already
-		//TODO for the async case we need to check for the deadline of the async requests which
-		//is set to a fix value, like 30s
-		case err := <-errExec:
-			return err
-		case err := <-call.Model().AsyncAck:
-			// for sync calls we ignore this ack
-			if isSync {
-				continue
-			}
-			if err != nil {
-				//call here handleCallEnd should be ok? with isStarted = false correct?
-				// in case of error do we need to close the slot?
-				return a.handleCallEnd(ctx, call, slot, err, false)
-			}
-		}
-	}
-}
-
-func (a *agent) slotExec(ctx context.Context, slot Slot, call *call, errChan chan<- error) {
-
 	// Pass this error (nil or otherwise) to end directly, to store status, etc.
-	err := slot.exec(ctx, call)
-	if slot != nil {
-		slot.Close()
-	}
-	errChan <- a.handleCallEnd(ctx, call, slot, err, true)
+	err = slot.exec(slotCtx, call)
+	return a.handleCallEnd(ctx, call, slot, err, true)
 }
 
 func (a *agent) handleCallEnd(ctx context.Context, call *call, slot Slot, err error, isStarted bool) error {
 
-	// if slot != nil {
-	// 	slot.Close()
-	// }
+	if slot != nil {
+		slot.Close()
+	}
 
 	// This means call was routed (executed)
 	if isStarted {
