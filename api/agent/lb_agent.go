@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"io/ioutil"
+	"net/http"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"go.opencensus.io/trace"
@@ -24,6 +26,11 @@ type lbAgent struct {
 	placer        pool.Placer
 	callOverrider CallOverrider
 	shutWg        *common.WaitGroup
+}
+
+type AckSyncResponseWriter struct {
+	http.ResponseWriter
+	origin http.ResponseWriter
 }
 
 type LBAgentOption func(*lbAgent) error
@@ -177,8 +184,40 @@ func (a *lbAgent) Submit(callI Call) error {
 	statsDequeue(ctx)
 	statsStartRun(ctx)
 
-	err = a.placer.PlaceCall(a.rp, ctx, call)
-	return a.handleCallEnd(ctx, call, err, true)
+	errPlace := make(chan error, 1)
+	call.Model().AsyncAck = make(chan error, 1)
+	isAckSync := call.Type == models.TypeAcksync
+	// change the context if it is a acksync call
+	if isAckSync {
+		ctx = common.BackgroundContext(ctx)
+		// We don't want this to run indefinetely we need to guard this context
+		var cancel func()
+
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(60+call.Timeout))
+		call.w = &AckSyncResponseWriter{
+			origin: call.ResponseWriter(),
+		}
+		defer cancel()
+	}
+
+	go a.spawnPlaceCall(ctx, call, errPlace)
+
+	for {
+		select {
+		case err := <-errPlace:
+			return err
+		case err := <-call.Model().AsyncAck: // The Ack will come only for AckSync call
+			// Write the header and return, can be a racy here if the normal path started already to write the header?
+			rw := call.w.(*AckSyncResponseWriter)
+			rw.WriteHeader(rw.StatusCodeFromError(err))
+			return nil
+		}
+	}
+}
+
+func (a *lbAgent) spawnPlaceCall(ctx context.Context, call *call, errCh chan error) {
+	err := a.placer.PlaceCall(a.rp, ctx, call)
+	errCh <- a.handleCallEnd(ctx, call, err, true)
 }
 
 // setRequestGetBody sets GetBody function on the given http.Request if it is missing.  GetBody allows
@@ -256,6 +295,29 @@ func (a *lbAgent) handleCallEnd(ctx context.Context, call *call, err error, isFo
 		statsErrors(ctx)
 	}
 	return err
+}
+
+func (w *AckSyncResponseWriter) Heaader() http.Header {
+	return w.origin.Header()
+}
+
+func (w *AckSyncResponseWriter) Write(data []byte) (int, error) {
+	//  we just /dev/null the data here
+	return 0, nil
+}
+
+func (w *AckSyncResponseWriter) WriteHeader(statusCode int) {
+	w.origin.WriteHeader(statusCode)
+}
+
+func (w *AckSyncResponseWriter) StatusCodeFromError(err error) int {
+	if err == nil {
+		return http.StatusAccepted
+	}
+	if models.IsAPIError(err) {
+		return models.GetAPIErrorCode(err)
+	}
+	return http.StatusInternalServerError
 }
 
 var _ Agent = &lbAgent{}

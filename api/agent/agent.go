@@ -294,12 +294,12 @@ func (a *agent) submit(ctx context.Context, call *call) error {
 
 	slot, err := a.getSlot(ctx, call)
 	if err != nil {
-		return a.handleCallEnd(ctx, call, err, false)
+		return a.handleCallEnd(ctx, call, slot, err, false)
 	}
 
 	err = call.Start(ctx)
 	if err != nil {
-		return a.handleCallEnd(ctx, call, err, false)
+		return a.handleCallEnd(ctx, call, slot, err, false)
 	}
 
 	statsDequeue(ctx)
@@ -309,59 +309,16 @@ func (a *agent) submit(ctx context.Context, call *call) error {
 	slotCtx, cancel := context.WithTimeout(ctx, time.Duration(call.Timeout)*time.Second)
 	defer cancel()
 
-	isSync := call.Model().Type == models.TypeSync
-	// in the async we wait for the notification from the runner once it placed the fn on a container and
-	// we return the response back, we still need to keep the container running till the end to complete
-	// the execution of the function
-	errExec := make(chan error, 1)
-	call.Model().AsyncAck = make(chan error, 1)
-
-	go a.slotExec(slotCtx, slot, call, errExec)
-
-	for {
-		select {
-		//TODO add ctx.Done? i think this case is managed by the slotExec already
-		//TODO for the async case we need to check for the deadline of the async requests which
-		//is set to a fix value, like 30s
-		case err := <-errExec:
-			return err
-		case err := <-call.Model().AsyncAck:
-			// for sync calls we ignore this ack
-			if isSync {
-				continue
-			}
-			if err != nil {
-				//call here handleCallEnd should be ok? with isStarted = false correct?
-				// in case of error do we need to close the slot?
-				return a.handleCallEnd(ctx, call, err, false)
-			}
-			return a.handleCallPlaced(ctx, call)
-		}
-	}
+	// Pass this error (nil or otherwise) to end directly, to store status, etc.
+	err = slot.exec(slotCtx, call)
+	return a.handleCallEnd(ctx, call, slot, err, true)
 }
 
-func (a *agent) slotExec(ctx context.Context, slot Slot, call *call, errChan chan<- error) {
-	// Pass this error (nil or otherwise) to end directly, to store status, etc.
-	err := slot.exec(ctx, call)
+func (a *agent) handleCallEnd(ctx context.Context, call *call, slot Slot, err error, isStarted bool) error {
+
 	if slot != nil {
 		slot.Close()
 	}
-
-	errChan <- a.handleCallEnd(ctx, call, err, true)
-}
-
-func (a *agent) handleCallPlaced(ctx context.Context, call *call) error {
-	//TODO write the 202 answer as the call has been placed on a container
-
-	fmt.Println("We have a call placed")
-
-	return nil
-}
-
-func (a *agent) handleCallEnd(ctx context.Context, call *call, err error, isStarted bool) error {
-	// if slot != nil {
-	// 	slot.Close()
-	// }
 
 	// This means call was routed (executed)
 	if isStarted {
@@ -734,27 +691,21 @@ func (s *hotSlot) exec(ctx context.Context, call *call) error {
 
 	call.req = call.req.WithContext(ctx) // TODO this is funny biz reed is bad
 
+	isAcksync := call.Model().Type == models.TypeAcksync
 	var errApp chan error
 	if call.Format == models.FormatHTTPStream {
-		errApp = s.dispatch(ctx, call)
+		req, err := callToHTTPRequest(ctx, call)
+		if isAcksync {
+			call.Model().AsyncAck <- err
+		}
+		errApp = s.dispatch(ctx, call, req, err)
 	} else { // TODO remove this block one glorious day
 		errApp = s.dispatchOldFormats(ctx, call)
-	}
-
-	if errApp != nil {
-		err := <-errApp
-		call.Model().AsyncAck <- err
-
-		// TODO: Not nice, will change this
-		errApp <- err
-	} else {
-		call.Model().AsyncAck <- nil
 	}
 
 	select {
 	case err := <-s.errC: // error from container
 		s.trySetError(err)
-
 		return err
 	case err := <-errApp: // from dispatch
 		if err != nil {
@@ -815,15 +766,13 @@ func callToHTTPRequest(ctx context.Context, call *call) (*http.Request, error) {
 	return req, err
 }
 
-func (s *hotSlot) dispatch(ctx context.Context, call *call) chan error {
+func (s *hotSlot) dispatch(ctx context.Context, call *call, req *http.Request, err error) chan error {
 	ctx, span := trace.StartSpan(ctx, "agent_dispatch_httpstream")
 	defer span.End()
 
 	// TODO we can't trust that resp.Write doesn't timeout, even if the http
 	// client should respect the request context (right?) so we still need this (right?)
 	errApp := make(chan error, 1)
-
-	req, err := callToHTTPRequest(ctx, call)
 
 	if err != nil {
 		errApp <- err

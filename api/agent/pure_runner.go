@@ -265,46 +265,6 @@ func (ch *callHandle) enqueueCallResponse(err error) {
 	}
 }
 
-// enqueueAckSyncResponse enqueues a Submit() response to the LB for
-// an AckSync call. We just need to signal back that the call has been
-// placed on a runner, if there is any error, we send it back to the LB
-func (ch *callHandle) enqueueAckSyncResponse(err error) {
-
-	var details string
-	var errCode int
-
-	log := common.Logger(ch.ctx)
-
-	//TODO this needs to be set correctly I don't like to hardcode it here
-	errCode = 202
-	if err != nil {
-		errCode = models.GetAPIErrorCode(err)
-	}
-
-	if ch.c != nil {
-		mcall := ch.c.Model()
-
-		details = mcall.ID
-
-	}
-
-	log.Debugf("Sending Ack for the sync call, details=%v", details)
-	errTmp := ch.enqueueMsgStrict(&runner.RunnerMsg{
-		Body: &runner.RunnerMsg_ResultStart{
-			ResultStart: &runner.CallResultStart{
-				Meta: &runner.CallResultStart_Http{
-					Http: &runner.HttpRespMeta{
-						Headers:    ch.prepHeaders(),
-						StatusCode: int32(errCode)}}}}})
-
-	if errTmp != nil {
-		log.WithError(errTmp).Infof("enqueueAckSyncResponse Send Error details=%v err=%v:%v", details, errCode, err.Error())
-		return
-	}
-	// we are not going to send anything back to the LB, we have done here so we can close the outQuue
-	close(ch.outQueue)
-}
-
 // spawnPipeToFn pumps data to Function via callHandle io.PipeWriter (pipeToFnW)
 // which is fed using input channel.
 func (ch *callHandle) spawnPipeToFn() chan *runner.DataFrame {
@@ -374,19 +334,14 @@ func (ch *callHandle) spawnSender() {
 	go func() {
 		for {
 			select {
-			case msg, chopen := <-ch.outQueue:
-				if msg == nil && chopen {
+			case msg := <-ch.outQueue:
+				if msg == nil {
 					ch.shutdown(nil)
 					return
 				}
 				err := ch.engagement.Send(msg)
 				if err != nil {
 					ch.shutdown(err)
-					return
-				}
-				// The channel is closed we don't need the spawnSender anymore
-				// For example when we sent an ack for the syncAck we then close the channel
-				if !chopen {
 					return
 				}
 			case <-ch.doneQueue:
@@ -455,7 +410,6 @@ func (ch *callHandle) Write(data []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-
 	total := 0
 	// split up data into gRPC chunks
 	for {
@@ -606,14 +560,8 @@ func (pr *pureRunner) AddCallListener(cl fnext.CallListener) {
 
 func (pr *pureRunner) spawnSubmit(state *callHandle) {
 	go func() {
-		isSync := state.c.Type == models.TypeSync
 		err := pr.a.Submit(state.c)
-		if isSync {
-			state.enqueueCallResponse(err)
-		} else {
-			state.enqueueAckSyncResponse(err)
-		}
-
+		state.enqueueCallResponse(err)
 	}()
 }
 

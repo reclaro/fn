@@ -327,14 +327,6 @@ DataLoop:
 				if meta.Http.StatusCode > 0 {
 					w.WriteHeader(int(meta.Http.StatusCode))
 				}
-				//TODO do we want to record some stats here?
-				if c.Model().Type == models.TypeAcksync {
-					log.Debugf("Received an ack message from runner for an acksync call Status=%v", meta.Http.StatusCode)
-					//TODO shall we return here or exiting the DataLoop and wait for the io.EOF?
-					break DataLoop
-
-				}
-				//if this is an async we can close the receiveFromrunner, we have done here
 			default:
 				log.Errorf("Unhandled meta type in start message: %v", meta)
 			}
