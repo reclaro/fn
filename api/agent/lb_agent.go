@@ -205,6 +205,8 @@ func (a *lbAgent) Submit(callI Call) error {
 	for {
 		select {
 		case err := <-errPlace:
+			// it can be possible that we return here even during an AckSync call, this is the case where we fail to find runner
+			// we want to send back this to the caller as a 503 error
 			return err
 		case err := <-call.Model().AsyncAck: // The Ack will come only for AckSync call
 			// Write the header and return, can be a racy here if the normal path started already to write the header?
