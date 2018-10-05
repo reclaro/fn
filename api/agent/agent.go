@@ -691,15 +691,14 @@ func (s *hotSlot) exec(ctx context.Context, call *call) error {
 
 	call.req = call.req.WithContext(ctx) // TODO this is funny biz reed is bad
 
-	isAcksync := call.Model().Type == models.TypeAcksync
 	var errApp chan error
+	var err error
 	if call.Format == models.FormatHTTPStream {
 		req, err := callToHTTPRequest(ctx, call)
-		if isAcksync {
-			call.Model().AsyncAck <- err
-		}
+		call.ackSync <- err
 		errApp = s.dispatch(ctx, call, req, err)
 	} else { // TODO remove this block one glorious day
+		call.ackSync <- err
 		errApp = s.dispatchOldFormats(ctx, call)
 	}
 

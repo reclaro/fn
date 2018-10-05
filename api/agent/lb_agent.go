@@ -31,6 +31,7 @@ type lbAgent struct {
 type AckSyncResponseWriter struct {
 	http.ResponseWriter
 	origin http.ResponseWriter
+	acked  chan struct{}
 }
 
 type LBAgentOption func(*lbAgent) error
@@ -185,18 +186,19 @@ func (a *lbAgent) Submit(callI Call) error {
 	statsStartRun(ctx)
 
 	errPlace := make(chan error, 1)
-	call.Model().AsyncAck = make(chan error, 1)
+
+	call.w = &AckSyncResponseWriter{
+		origin: call.ResponseWriter(),
+		acked:  make(chan struct{}, 1),
+	}
 	isAckSync := call.Type == models.TypeAcksync
+	rw := call.w.(*AckSyncResponseWriter)
 	// change the context if it is a acksync call
 	if isAckSync {
 		ctx = common.BackgroundContext(ctx)
 		// We don't want this to run indefinetely we need to guard this context
 		var cancel func()
-
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(60+call.Timeout))
-		call.w = &AckSyncResponseWriter{
-			origin: call.ResponseWriter(),
-		}
 		defer cancel()
 	}
 
@@ -205,14 +207,12 @@ func (a *lbAgent) Submit(callI Call) error {
 	for {
 		select {
 		case err := <-errPlace:
-			// it can be possible that we return here even during an AckSync call, this is the case where we fail to find runner
-			// we want to send back this to the caller as a 503 error
 			return err
-		case err := <-call.Model().AsyncAck: // The Ack will come only for AckSync call
-			// Write the header and return, can be a racy here if the normal path started already to write the header?
-			rw := call.w.(*AckSyncResponseWriter)
-			rw.WriteHeader(rw.StatusCodeFromError(err))
-			return nil
+		case <-rw.acked:
+			// if it is an acksync we return immediately otherwise we ignore the ack
+			if isAckSync {
+				return nil
+			}
 		}
 	}
 }
@@ -310,16 +310,7 @@ func (w *AckSyncResponseWriter) Write(data []byte) (int, error) {
 
 func (w *AckSyncResponseWriter) WriteHeader(statusCode int) {
 	w.origin.WriteHeader(statusCode)
-}
-
-func (w *AckSyncResponseWriter) StatusCodeFromError(err error) int {
-	if err == nil {
-		return http.StatusAccepted
-	}
-	if models.IsAPIError(err) {
-		return models.GetAPIErrorCode(err)
-	}
-	return http.StatusInternalServerError
+	w.acked <- struct{}{}
 }
 
 var _ Agent = &lbAgent{}
