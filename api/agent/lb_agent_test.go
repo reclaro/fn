@@ -125,6 +125,7 @@ type mockRunnerCall struct {
 	stdErr     io.ReadWriteCloser
 	model      *models.Call
 	slotHashId string
+	ackSync    chan error
 }
 
 func (c *mockRunnerCall) SlotHashId() string {
@@ -160,7 +161,9 @@ func TestOneRunner(t *testing.T) {
 	cfg := pool.NewPlacerConfig(360)
 	placer := pool.NewNaivePlacer(&cfg)
 	rp := setupMockRunnerPool([]string{"171.19.0.1"}, 10*time.Millisecond, 5)
-	call := &mockRunnerCall{}
+	modelCall := &models.Call{Type: models.TypeSync}
+	call := &mockRunnerCall{ackSync: make(chan error, 1),
+		model: modelCall}
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(1*time.Second))
 	defer cancel()
 	err := placer.PlaceCall(rp, ctx, call)
@@ -173,7 +176,11 @@ func TestEnforceTimeoutFromContext(t *testing.T) {
 	cfg := pool.NewPlacerConfig(360)
 	placer := pool.NewNaivePlacer(&cfg)
 	rp := setupMockRunnerPool([]string{"171.19.0.1"}, 10*time.Millisecond, 5)
-	call := &mockRunnerCall{}
+
+	modelCall := &models.Call{Type: models.TypeSync}
+	call := &mockRunnerCall{ackSync: make(chan error, 1),
+		model: modelCall}
+
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now())
 	defer cancel()
 	err := placer.PlaceCall(rp, ctx, call)
@@ -196,7 +203,10 @@ func TestRRRunner(t *testing.T) {
 			defer wg.Done()
 			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(10*time.Millisecond))
 			defer cancel()
-			call := &mockRunnerCall{}
+			modelCall := &models.Call{Type: models.TypeSync}
+			call := &mockRunnerCall{ackSync: make(chan error, 1),
+				model: modelCall}
+
 			err := placer.PlaceCall(rp, ctx, call)
 			if err != nil {
 				failures <- fmt.Errorf("Timed out call %d", i)
@@ -231,7 +241,10 @@ func TestEnforceLbTimeout(t *testing.T) {
 			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(10*time.Millisecond))
 			defer cancel()
 
-			call := &mockRunnerCall{}
+			modelCall := &models.Call{Type: models.TypeSync}
+			call := &mockRunnerCall{ackSync: make(chan error, 1),
+				model: modelCall}
+
 			err := placer.PlaceCall(rp, ctx, call)
 			if err != nil {
 				failures <- fmt.Errorf("Timed out call %d", i)
