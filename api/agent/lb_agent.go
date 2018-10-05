@@ -304,8 +304,7 @@ func (w *AckSyncResponseWriter) Heaader() http.Header {
 }
 
 func (w *AckSyncResponseWriter) Write(data []byte) (int, error) {
-	//  we just /dev/null the data here
-	return 0, nil
+	return w.origin.Write(data)
 }
 
 func (w *AckSyncResponseWriter) WriteHeader(statusCode int) {

@@ -404,6 +404,10 @@ func (ch *callHandle) prepHeaders() []*runner.HttpHeader {
 // received data is pushed to LB via gRPC sender queue.
 // Write also sends http headers/state to the LB.
 func (ch *callHandle) Write(data []byte) (int, error) {
+	if ch.c.Model().Type == models.TypeAsync {
+		//If it is an acksync call we just /dev/null the data coming back from the container
+		return len(data), nil
+	}
 	var err error
 	ch.headerOnce.Do(func() {
 		// WARNING: we do fetch Status and Headers without
