@@ -695,10 +695,15 @@ func (s *hotSlot) exec(ctx context.Context, call *call) error {
 	var err error
 	if call.Format == models.FormatHTTPStream {
 		req, err := callToHTTPRequest(ctx, call)
-		call.ackSync <- err
+		// the acksync channel is used on on LB configuration so the channel could be not initialized
+		if call.ackSync != nil {
+			call.ackSync <- err
+		}
 		errApp = s.dispatch(ctx, call, req, err)
 	} else { // TODO remove this block one glorious day
-		call.ackSync <- err
+		if call.ackSync != nil {
+			call.ackSync <- err
+		}
 		errApp = s.dispatchOldFormats(ctx, call)
 	}
 
